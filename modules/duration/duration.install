@@ -1,0 +1,43 @@
+<?php
+// $Id: duration.install,v 1.1 2008/04/28 19:45:06 jpetso Exp $
+
+/**
+ * @file
+ * A CCK field for entering time durations.
+ *
+ * Copyright 2008 by Jakob Petsovits <jpetso@gmx.at>
+ * Distributed under the GNU General Public Licence version 2 or higher,
+ * as published by the FSF on http://www.gnu.org/copyleft/gpl.html
+ */
+
+/**
+ * Implementation of hook_install().
+ */
+function duration_install() {
+  content_notify('install', 'duration');
+}
+
+/**
+ * Implementation of hook_uninstall().
+ */
+function duration_uninstall() {
+  content_notify('uninstall', 'duration');
+}
+
+/**
+ * Implementation of hook_enable().
+ *
+ * Notify content module when this module is enabled.
+ */
+function duration_enable() {
+  content_notify('enable', 'duration');
+}
+
+/**
+ * Implementation of hook_disable().
+ *
+ * Notify content module when this module is disabled.
+ */
+function duration_disable() {
+  content_notify('disable', 'duration');
+}

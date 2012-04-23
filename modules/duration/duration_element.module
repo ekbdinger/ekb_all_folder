@@ -1,0 +1,274 @@
+<?php
+// $Id: duration_element.module,v 1.5 2008/05/27 01:47:46 jpetso Exp $
+
+/**
+ * @file
+ * A form element for entering time durations.
+ *
+ * Copyright 2007, 2008 by Jakob Petsovits <jpetso@gmx.at>
+ * Distributed under the GNU General Public Licence version 2 or higher,
+ * as published by the FSF on http://www.gnu.org/copyleft/gpl.html
+ */
+
+/**
+ * Implementation of hook_elements():
+ * Register the duration widget with the Forms API and set default values.
+ */
+function duration_element_elements() {
+  return array(
+    'duration_combo' => array(
+      '#input' => TRUE,
+      '#largest_metric' => 'years',
+      '#smallest_metric' => 'seconds',
+      '#display_inline' => TRUE,
+      '#size' => 3, // size of each input textbox
+      '#maxlength' => 4, // maxlength of each input textbox
+      '#process' => array('duration_element_combo_process'),
+    ),
+    'duration_select' => array(
+      '#input' => TRUE,
+      '#options' => array(),
+      '#format_callback' => 'duration_format_list',
+      '#format_callback_arguments' => array(),
+      '#process' => array('duration_element_select_process'),
+    ),
+  );
+}
+
+
+/**
+ * Value callback, so that the #default_value is not directly assigned
+ * but transformed into an array for the nested "$metric" elements.
+ * form.inc produces a nasty error if we don't do that.
+ */
+function form_type_duration_combo_value($element, $edit = FALSE) {
+  if (func_num_args() == 1) {
+    if (is_object($element['#default_value'])) {
+      $duration = $element['#default_value'];
+      // Cut off metrics that are not provided as input fields.
+      $duration->set_granularity(
+        $element['#smallest_metric'], $element['#largest_metric']
+      );
+    }
+    else { // no default value, use a brand new duration object instead
+      $duration = duration_create();
+    }
+
+    $values = array(
+      'type' => $duration->type(),
+    );
+    foreach ($duration->to_array() as $metric => $value) {
+      $values[$metric] = $value;
+    }
+  }
+  else {
+    $values = $edit;
+    $values['type'] = isset($values['months']) ? 'months' : 'weeks';
+  }
+  return $values;
+}
+
+/**
+ * The 'process' callback for 'duration_combo' form elements.
+ * Called after defining the form and while building it.
+ */
+function duration_element_combo_process($element) {
+  if (isset($element['#element_validate'])) {
+    // Before the element user gets to do his validation, make sure we do ours.
+    array_unshift($element['#element_validate'], 'duration_element_combo_validate');
+  }
+  else {
+    $element['#element_validate'] = array('duration_element_combo_validate');
+  }
+  $type = $element['#value']['type']; // 'weeks' or 'months'
+
+  // Use the format that the duration object itself is using
+  // (e.g. 'P1D' for 'months', 'P0W1D' for 'weeks') - even if that overrides
+  // the element creator's setting. We might lose data otherwise, and anyways
+  // the element creator should make sure to pass an appropriately typed object.
+  if ($type == 'weeks' && $element['#smallest_metric'] == 'months') {
+    $element['#smallest_metric'] = 'years'; // are larger than months, weeks are not
+  }
+  if ($type == 'months' && $element['#smallest_metric'] == 'weeks') {
+    $element['#smallest_metric'] = 'months';
+  }
+  if ($type == 'weeks' && $element['#largest_metric'] == 'months') {
+    $element['#largest_metric'] = 'weeks';
+  }
+  if ($type == 'months' && $element['#largest_metric'] == 'weeks') {
+    $element['#largest_metric'] = 'days'; // are smaller than weeks, months are not
+  }
+
+  $metrics = duration_metrics();
+  $used_metrics = array();
+  $encountered_largest_metric = FALSE;
+
+  foreach ($metrics as $metric) {
+    if ($metric == $element['#largest_metric']) {
+      $encountered_largest_metric = TRUE;
+    }
+    if ($encountered_largest_metric) {
+      if (($metric == 'months' && $type == 'weeks')
+          || ($metric == 'weeks' && $type == 'months')) {
+        // doesn't belong in here, don't include this metric
+      }
+      else {
+        $used_metrics[$metric] = duration_metric_t($metric);
+      }
+    }
+    if ($metric == $element['#smallest_metric']) {
+      break;
+    }
+  }
+
+  $element['#tree'] = TRUE; // so that we can nest child input elements
+  $element['#used_metrics'] = $used_metrics; // save for the validation callback
+
+  foreach ($used_metrics as $metric => $metric_t) {
+    if ($metric != $element['#smallest_metric']) {
+      // Some additional space between the text and the next textfield.
+      $metric_t = '<span style="margin-right: 0.8em;">' . $metric_t . '</span>';
+    }
+    $element[$metric] = array(
+      '#type' => 'textfield',
+      '#default_value' => $element['#value'][$metric],
+      '#size' => $element['#size'],
+      '#maxlength' => $element['#maxlength'],
+      '#prefix' => '<div class="container-inline">',
+      '#suffix' => $metric_t . '</div>',
+    );
+  }
+
+  // Don't have a maxlength in the parent element, as Form API tries to
+  // perform string operations if we've got that property.
+  unset($element['#maxlength']);
+
+  return $element;
+}
+
+/**
+ * The 'validate' callback for 'duration_combo' form elements.
+ * Called after values are assigned, before form validate and submit are called.
+ */
+function duration_element_combo_validate(&$element, &$form_state) {
+  $duration = duration_create();
+
+  foreach ($element['#used_metrics'] as $metric => $metric_t) {
+    $value = $element[$metric]['#value'];
+
+    if ($value === '') {
+      $value = 0;
+    }
+    if (!is_numeric($value) || $value < 0) {
+      form_error($element[$metric],
+        t('The "@metric" value in %widget must be greater or equal 0.',
+        array('@metric' => $metric_t, '%widget' => $element['#title']))
+      );
+      $error_set = TRUE;
+    }
+    else {
+      $duration->set_value($metric, $value);
+    }
+  }
+  if ($element['#required'] && $duration->to_single_metric('seconds') == 0) {
+    form_error($element,
+      t('A non-zero duration is required for %widget.',
+      array('%widget' => $element['#title']))
+    );
+  }
+  form_set_value($element, $duration, $form_state);
+
+  // Altering the element itself is slightly non-standard (..."a hack"),
+  // but allows access to the modified value in subsequent element validators.
+  $element['#value'] = $duration;
+}
+
+
+/**
+ * Value callback, so that the #default_value is not directly assigned
+ * but transformed into an array for the nested 'select' element.
+ * form.inc produces a nasty error if we don't do that.
+ */
+function form_type_duration_select_value($element, $edit = FALSE) {
+  if (func_num_args() == 1) {
+    return array('select' => $element['#default_value']);
+  }
+}
+
+/**
+ * The 'process' callback for the 'duration_select' element.
+ * Called after defining the form and while building it.
+ */
+function duration_element_select_process($element) {
+  if (isset($element['#element_validate'])) {
+    // Before the element user gets to do his validation, make sure we do ours.
+    array_unshift($element['#element_validate'], 'duration_element_select_validate');
+  }
+  else {
+    $element['#element_validate'] = array('duration_element_select_validate');
+  }
+  $options = array();
+
+  foreach ($element['#options'] as $key => $duration) {
+    if (!is_object($duration)) {
+      continue;
+    }
+    $function = $element['#format_callback'];
+    $args = $element['#format_callback_arguments'];
+    array_unshift($args, $duration); // $duration as first argument
+    $options[$key] = call_user_func_array($function, $args);
+  }
+  $element['#tree'] = TRUE; // so that we can nest child input elements
+
+  $element['select'] = array(
+    '#type' => 'select',
+    '#default_value' => isset($element['#default_value'])
+                        ? $element['#default_value']
+                        : reset(array_keys($options)),
+    '#options' => $options,
+    '#required' => $element['#required'],
+  );
+  return $element;
+}
+
+/**
+ * The 'validate' callback for the 'duration_select' element.
+ * Called after values are assigned, before form validate and submit are called.
+ */
+function duration_element_select_validate(&$element, &$form_state) {
+  // Altering the element itself is slightly non-standard (..."a hack"),
+  // but allows access to the modified value in subsequent element validators.
+  $element['#value'] = $element['select']['#value'];
+  form_set_value($element, $element['#value'], $form_state);
+}
+
+
+/**
+ * Implementation of hook_theme().
+ */
+function duration_element_theme() {
+  return array(
+    'duration_combo' => array('arguments' => array('element' => NULL)),
+    'duration_select' => array('arguments' => array('element' => NULL)),
+  );
+}
+
+/**
+ * Theme the duration element.
+ */
+function theme_duration_combo($element) {
+  // class="container-inline" makes child widgets align horizontally.
+  $children = ($element['#display_inline'])
+    ? '<div class="container-inline">' . $element['#children'] . '</div>'
+    : $element['#children'];
+
+  return theme('form_element', $element, $children);
+}
+
+function theme_duration_select($element) {
+  // class="container-inline" not only makes child widgets align horizontally,
+  // it also reduces the unnecessarily large space between title and element.
+  return theme('form_element', $element,
+    '<div class="container-inline">' . $element['#children'] . '</div>'
+  );
+}

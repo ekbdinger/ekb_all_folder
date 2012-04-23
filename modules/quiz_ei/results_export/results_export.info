@@ -1,0 +1,15 @@
+; $Id: results_export.info,v 1.1 2010/06/18 11:50:17 falcon Exp $
+name = Quiz Results Export
+package = Quiz Addon
+description = This module allows you to export Quiz Results in HTML, XML and CSV format.
+dependencies[] = quiz
+dependencies[] = querypath
+core = 6.x
+php = 5
+
+; Information added by drupal.org packaging script on 2010-06-18
+version = "6.x-4.0-alpha1"
+core = "6.x"
+project = "quiz_ei"
+datestamp = "1276864508"
+

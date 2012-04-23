@@ -1,0 +1,13 @@
+; $Id: duration_element.info,v 1.1 2008/04/26 23:16:47 jpetso Exp $
+name = Duration element
+description = Provides a form element for entering time durations.
+package = Date/Time
+dependencies[] = duration_api
+core = 6.x
+
+; Information added by drupal.org packaging script on 2008-10-26
+version = "6.x-1.0"
+core = "6.x"
+project = "duration"
+datestamp = "1225034707"
+

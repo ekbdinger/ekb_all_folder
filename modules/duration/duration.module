@@ -1,0 +1,332 @@
+<?php
+// $Id: duration.module,v 1.12 2008/10/08 06:36:24 jpetso Exp $
+
+/**
+ * @file
+ * A CCK field for entering time durations.
+ *
+ * Copyright 2008 by Jakob Petsovits <jpetso@gmx.at>
+ * Distributed under the GNU General Public Licence version 2 or higher,
+ * as published by the FSF on http://www.gnu.org/copyleft/gpl.html
+ */
+
+
+/**
+ * Implementation of hook_field_info().
+ */
+function duration_field_info() {
+  return array(
+    'duration' => array(
+      'label' => t('Duration'),
+      'description' => t('Store a duration in the database as an ISO duration.'),
+    ),
+  );
+}
+
+/**
+ * Implementation of hook_field_settings().
+ */
+function duration_field_settings($op, $field) {
+  switch ($op) {
+    case 'form':
+      $form = array();
+      return $form;
+
+    case 'save':
+      return array();
+
+    case 'database columns':
+      return array(
+        'iso8601' => array(
+          'type'     => 'varchar',
+          'length'   => '64',
+          'not null' => TRUE,
+          'default'  => '',
+        ),
+        'approx_seconds' => array(
+          'type'     => 'int',
+          'unsigned' => TRUE,
+          'not null' => TRUE,
+          'default'  => 0,
+          'sortable' => TRUE,
+        ),
+      );
+
+    case 'views data':
+      $data = content_views_field_views_data($field);
+      $db_info = content_database_info($field);
+      $table_alias = content_views_tablename($field);
+
+      // Set our own field handler so that loads the Duration object (like in
+      // hook_field($op='load')), because CCK's standard field handler doesn't
+      // do that.
+      $data[$table_alias][$field['field_name'] .'_iso8601']['field']['handler'] = 'duration_handler_field';
+
+      return $data;
+  }
+}
+
+/**
+ * Implementation of hook_field().
+ */
+function duration_field($op, &$node, $field, &$items, $teaser, $page) {
+  switch ($op) {
+    case 'load':
+      // Add a third property in addition to 'iso8601' and 'approx_seconds':
+      // 'duration', containing the duration object for the ISO string.
+      foreach ($items as $delta => $item) {
+        $items[$delta]['duration'] = duration_create($item['iso8601']);
+      }
+      return array($field['field_name'] => $items);
+  }
+}
+
+/**
+ * Implementation of hook_content_is_empty().
+ */
+function duration_content_is_empty($item, $field) {
+  if (empty($item['iso8601'])) {
+    return TRUE;
+  }
+  return FALSE;
+}
+
+
+/**
+ * Implementation of hook_field_formatter_info().
+ */
+function duration_field_formatter_info() {
+  return array(
+    'default' => array(
+      'label' => t('List of metrics ("2 months, 15 days, ...")'),
+      'field types' => array('duration'),
+      'multiple values' => CONTENT_HANDLE_CORE,
+    ),
+    'hms' => array(
+      'label' => t('HMS ("3h20m45s")'),
+      'field types' => array('duration'),
+      'multiple values' => CONTENT_HANDLE_CORE,
+    ),
+    'colons' => array(
+      'label' => t('Time with colons ("3:20:45")'),
+      'field types' => array('duration'),
+      'multiple values' => CONTENT_HANDLE_CORE,
+    ),
+  );
+}
+
+/**
+ * Implementation of hook_theme().
+ */
+function duration_theme() {
+  return array(
+    'duration_formatter_default' => array(
+      'arguments' => array('element' => NULL),
+    ),
+    'duration_formatter_hms' => array(
+      'arguments' => array('element' => NULL),
+    ),
+    'duration_formatter_colons' => array(
+      'arguments' => array('element' => NULL),
+    ),
+  );
+}
+
+/**
+ * Theme function for the 'default' duration field formatter.
+ */
+function theme_duration_formatter_default($element) {
+  if (isset($element['#node']->duration)) { // loaded by duration_handler_field
+    $element['#item']['duration'] = $element['#node']->duration;
+  }
+  return duration_format_list($element['#item']['duration']);
+}
+
+/**
+ * Theme function for the 'hms' duration field formatter.
+ */
+function theme_duration_formatter_hms($element) {
+  if (isset($element['#node']->duration)) { // loaded by duration_handler_field
+    $element['#item']['duration'] = $element['#node']->duration;
+  }
+  return duration_format_hms($element['#item']['duration']);
+}
+
+/**
+ * Theme function for the 'colons' duration field formatter.
+ */
+function theme_duration_formatter_colons($element) {
+  if (isset($element['#node']->duration)) { // loaded by duration_handler_field
+    $element['#item']['duration'] = $element['#node']->duration;
+  }
+  return duration_format_custom($element['#item']['duration'], '%h:%M:%S');
+}
+
+
+/**
+ * Implementation of hook_widget_info().
+ */
+function duration_widget_info() {
+  return array(
+    'duration_combo' => array(
+      'label' => t('Text Fields'),
+      'field types' => array('duration'),
+      'multiple values' => CONTENT_HANDLE_CORE,
+    ),
+  );
+}
+
+/**
+ * Implementation of hook_widget_settings().
+ */
+function duration_widget_settings($op, $widget) {
+  switch ($op) {
+    case 'form':
+      $form = array();
+
+      if ($widget['type'] == 'duration_combo') {
+        $form['use_weeks'] = array(
+          '#type' => 'checkbox',
+          '#title' => t('Use weeks instead of months'),
+          '#description' => t('The date part of a duration can either be specified using one of the (mutually exclusive) formats "years/months/days" or "years/weeks/days". By default, the former one is used, but you can switch to the weeks format by checking this option.'),
+          '#default_value' => isset($widget['use_weeks']) ? $widget['use_weeks'] : 0,
+          '#required' => TRUE,
+        );
+
+        $metrics = duration_metrics('months');
+        $metric_options = array();
+        foreach ($metrics as $metric) {
+          if ($metric == 'months') {
+            $metric_options[$metric] = t('!months/!weeks', array(
+              '!months' => duration_metric_t('months'),
+              '!weeks' => duration_metric_t('weeks'),
+            ));
+          }
+          else {
+            $metric_options[$metric] = duration_metric_t($metric);
+          }
+        }
+
+        $form['largest_metric'] = array(
+          '#type' => 'select',
+          '#title' => t('Largest metric that can be entered'),
+          '#options' => $metric_options,
+          '#default_value' => $widget['largest_metric']
+                              ? $widget['largest_metric']
+                              : 'years',
+          '#required' => TRUE,
+        );
+        $form['smallest_metric'] = array(
+          '#type' => 'select',
+          '#title' => t('Smallest metric that can be entered'),
+          '#options' => $metric_options,
+          '#default_value' => $widget['smallest_metric']
+                              ? $widget['smallest_metric']
+                              : 'seconds',
+          '#required' => TRUE,
+        );
+      }
+      else { // not a duration combo, assign arbitrary default values instead.
+        $form['use_weeks'] = array('#type' => 'hidden', '#value' => 0);
+        $form['largest_metric'] = array('#type' => 'hidden', '#value' => 'years');
+        $form['smallest_metric'] = array('#type' => 'hidden', '#value' => 'seconds');
+      }
+      return $form;
+
+    case 'validate':
+      // Make sure the smallest metric is at least as small as the largest metric.
+      $metrics = duration_metrics('months', 'descending');
+      foreach ($metrics as $metric) {
+        if ($metric == $widget['largest_metric']) {
+          // Encountered the lartest metric first, that's how it should be.
+          break;
+        }
+        if ($metric == $widget['smallest_metric']) {
+          // Encountered the smallest metric first, which means it's larger
+          // than the largest metric. That can't be allowed, obviously.
+          form_set_error('smallest_metric',
+            t('The "smallest metric" must not be greater than the "largest metric".')
+          );
+        }
+      }
+      break;
+
+    case 'save':
+      return array('use_weeks', 'largest_metric', 'smallest_metric');
+  }
+}
+
+/**
+ * Implementation of hook_widget().
+ */
+function duration_widget(&$form, &$form_state, $field, $items, $delta = 0) {
+  if ($field['widget']['type'] == 'duration_combo') {
+    // If we're using weeks format, make sure everything complies to that.
+    if ($field['widget']['use_weeks']) {
+      if ($field['widget']['largest_metric'] == 'months') {
+        $field['widget']['largest_metric'] = 'weeks';
+      }
+      if ($field['widget']['smallest_metric'] == 'months') {
+        $field['widget']['smallest_metric'] = 'weeks';
+      }
+      if (isset($items[$delta]['duration'])) {
+        $items[$delta]['duration']->set_type('weeks');
+      }
+      else {
+        $items[$delta]['duration'] = duration_create('P0W');
+      }
+    }
+    $element = array(
+      '#type' => 'duration_combo',
+      '#default_value' => isset($items[$delta]['duration'])
+                          ? $items[$delta]['duration']
+                          : NULL,
+      '#largest_metric' => isset($field['widget']['largest_metric'])
+                            ? $field['widget']['largest_metric']
+                            : 'years',
+      '#smallest_metric' => isset($field['widget']['smallest_metric'])
+                            ? $field['widget']['smallest_metric']
+                            : 'seconds',
+      '#element_validate' => array('duration_combo_validate'),
+    );
+  }
+  return $element;
+}
+
+/**
+ * Additional 'validate' callback for 'duration_combo' widgets.
+ * Transforms the original element form value to the CCK item (array) format.
+ */
+function duration_combo_validate($element, &$form_state) {
+  $item = array(
+    'duration' => $element['#value'],
+    'iso8601' => $element['#value']->to_iso(),
+    'approx_seconds' => $element['#value']->to_single_metric('seconds'),
+  );
+  form_set_value($element, $item, $form_state);
+}
+
+
+/**
+ * Implementation of hook_menu().
+ */
+function duration_menu() {
+  $items['duration-cck'] = array(
+    'title' => 'Duration CCK field test form',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('duration_test_form'),
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+  );
+  return $items;
+}
+
+/**
+ * Implementation of hook_views_api().
+ */
+function duration_views_api() {
+  return array(
+    'api' => 2.0,
+    'path' => drupal_get_path('module', 'duration') . '/views',
+  );
+}

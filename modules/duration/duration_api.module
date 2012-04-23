@@ -1,0 +1,329 @@
+<?php
+// $Id: duration_api.module,v 1.6 2008/10/26 15:04:43 jpetso Exp $
+
+/**
+ * @file
+ * An API to transform and perform evaluations on duration objects.
+ *
+ * This file contains supplemental functions which perform tasks that
+ * don't fit into the duration class itself. Formatting, mostly.
+ *
+ * Copyright 2007, 2008 by Jakob Petsovits <jpetso@gmx.at>
+ * Distributed under the GNU General Public Licence version 2 or higher,
+ * as published by the FSF on http://www.gnu.org/copyleft/gpl.html
+ */
+
+// The nice stuff mostly concerns the Duration object.
+include_once(drupal_get_path('module', 'duration') .'/duration.inc');
+
+
+/**
+ * Format a duration object as simple list of values with their metric name,
+ * delimited by a comma (or another delimiter that you might specify).
+ * Zero values will not be included.
+ *
+ * @param $duration
+ *   The duration object that should be formatted as string.
+ * @param $delimiter
+ *   The string that separates the formatted values. The default comma should
+ *   be fine for many cases, but you can just as well use delimiters like
+ *   ' | ', '\</li\>\<li\>' or even ' ' and '' (those especially make sense if
+ *   you use functions like 'duration_metric_hms' as @p $format_callback).
+ * @param $format_callback
+ *   The function that provides a single formatted metric string.
+ *   It takes the two arguments $metric and $value and should return a string
+ *   including the value and the metric name (or an empty string - in that case
+ *   this metric won't be included in the resulting list).
+ * @param $display_callback
+ *   The function that determines which values will be shown and which are
+ *   filtered out from the list. It takes a single argument, $duration_values,
+ *   which contains all metrics (as array keys) and their values (as array
+ *   values). That array is already sorted in the same way that it will show up
+ *   in the formatted output. The function should return another structured
+ *   array with again metrics as array keys and the "display state" as values:
+ *   TRUE if this value should be displayed, or FALSE if it shouldn't.
+ * @param $sort
+ *   The order of the list: 'descending' for "years first, seconds last",
+ *   and 'ascending' for "seconds first, years last".
+ */
+function duration_format_list($duration, $delimiter = ', ', $format_callback = 'duration_metric_plural', $display_callback = 'duration_display_nonzero', $sort = 'descending') {
+  if (!is_object($duration) || !$duration->is_valid()) {
+    return '';
+  }
+  $strings = array();
+  $duration_values = $duration->to_array($sort);
+  $display = $display_callback($duration_values);
+
+  // If all values are filtered out, let's still display at least one of them.
+  $display_true = array_filter($display);
+  if (empty($display_true)) {
+    $display['seconds'] = TRUE;
+  }
+
+  // Now that this is sorted out, let's get down to business!
+  foreach ($duration_values as $metric => $value) {
+    if (!$display[$metric]) {
+      continue; // the filter says we should not display this value
+    }
+    $strings[] = $format_callback($metric, $value);
+  }
+  return implode($delimiter, $strings);
+}
+
+/**
+ * Convenience function to render a duration object in the '23h0m15s' format.
+ * Years, months, weeks and days will be (approximately) broken down so they
+ * fit into the hours/minutes/seconds scheme.
+ */
+function duration_format_hms($duration, $delimiter = '') {
+  if (!is_object($duration) || !$duration->is_valid()) {
+    return '';
+  }
+  $duration = clone($duration); // let's not modify the original object, mmkay?
+  $duration->set_granularity('seconds', 'hours');
+  return duration_format_list($duration, $delimiter,
+    'duration_metric_hms', 'duration_display_connected', 'descending'
+  );
+}
+
+/**
+ * Display callback for duration_format_list():
+ * Specify all values to be displayed, regardless of their values.
+ */
+function duration_display_all($duration_values) {
+  $display = array();
+  foreach ($duration_values as $metric => $value) {
+    $display[$metric] = TRUE;
+  }
+  return $display;
+}
+
+/**
+ * Display callback for duration_format_list():
+ * Specify all zero values to be filtered out.
+ */
+function duration_display_nonzero($duration_values) {
+  $display = array();
+  foreach ($duration_values as $metric => $value) {
+    $display[$metric] = ($value != 0); // TRUE for non-zero, FALSE for zero values
+  }
+  return $display;
+}
+
+/**
+ * Display callback for duration_format_list():
+ * Exclude values above the largest non-zero metric and below the smallest one.
+ */
+function duration_display_connected($duration_values) {
+  $display = array();
+  $encountered_nonzero_value = FALSE;
+
+  // First run: Set values above the largest non-zero metric to FALSE,
+  // and remember the smallest non-zero metric.
+  foreach ($duration_values as $metric => $value) {
+    if ($encountered_nonzero_value) {
+      if ($value != 0) {
+        $smallest_nonzero_metric = $metric; // save for later processing
+      }
+    }
+    else { // did not yet encounter a non-zero value
+      if ($value == 0) {
+        $display[$metric] = FALSE; // still no luck... try the next one
+        continue;
+      }
+      $encountered_nonzero_value = TRUE; // yay, non-zero - let's display this value
+      $smallest_nonzero_metric = $metric;
+    }
+    $display[$metric] = TRUE; // enable displaying this unless we think it over
+  }
+  // Second run: Now that we know the smallest non-zero metric,
+  // filter out the values below that one.
+  $filter = FALSE;
+  foreach ($duration_values as $metric => $value) {
+    if ($filter) {
+      $display[$metric] = FALSE;
+    }
+    if ($metric == $smallest_nonzero_metric) {
+      $filter = TRUE; // from the next value on, filter to our hearts' content
+    }
+  }
+  return $display;
+}
+
+
+/**
+ * Return a structured array of possible metric identifier strings.
+ * Note that unless you specify the duration @p $type, both 'months'
+ * and 'weeks' are included, but only one of those can exist in a duration.
+ * Take care on that issue.
+ *
+ * @param $type
+ *   If you specify 'months' or 'weeks' instead of the default value NULL,
+ *   the other one of those two will be left out as month and week format
+ *   is mutually exclusive. In other words, with @p $type == 'months' you'll
+ *   get no 'weeks' in the result array, and with @p $type == 'weeks' there
+ *   won't be 'months' in there.
+ * @param $sort
+ *   The order of the metrics in the result value:
+ *   - 'descending' for "years first, seconds last"
+ *   - 'ascending' for "seconds first, years last".
+ */
+function duration_metrics($type = NULL, $sort = 'descending') {
+  $metrics = array(
+    'years', 'months', 'weeks', 'days',
+    'hours', 'minutes', 'seconds',
+  );
+  if (isset($type)) {
+    $removed_key = ($type == 'months')
+                    ? array_search('weeks', $metrics)
+                    : array_search('months', $metrics);
+    unset($metrics[$removed_key]);
+  }
+  if ($sort == 'ascending') {
+    $metrics = array_reverse($metrics);
+  }
+  return $metrics;
+}
+
+/**
+ * Translate a metric idendifier string to a user visible string.
+ * Use this only for displaying the plain metrics names - if you want to
+ * display value/metric pairs like "18 years" then you want to use
+ * duration_metric_plural() instead.
+ */
+function duration_metric_t($metric) {
+  static $metrics; // cache that stuff
+
+  if (!isset($metrics)) {
+    $metrics = array(
+      'years' => t('years'),
+      'months' => t('months'),
+      'weeks' => t('weeks'),
+      'days' => t('days'),
+      'hours' => t('hours'),
+      'minutes' => t('minutes'),
+      'seconds' => t('seconds'),
+    );
+  }
+  return $metrics[$metric];
+}
+
+/**
+ * Translate a duration value and metric with format_plural.
+ */
+function duration_metric_plural($metric, $value) {
+  $metrics = array(
+    'seconds' => array(
+      'singular' => t('1 second'),
+      'plural' => t('@count seconds'),
+    ),
+    'minutes' => array(
+      'singular' => t('1 minute'),
+      'plural' => t('@count minutes'),
+    ),
+    'hours' => array(
+      'singular' => t('1 hour'),
+      'plural' => t('@count hours'),
+    ),
+    'days' => array(
+      'singular' => t('1 day'),
+      'plural' => t('@count days'),
+    ),
+    'weeks' => array(
+      'singular' => t('1 week'),
+      'plural' => t('@count weeks'),
+    ),
+    'months' => array(
+      'singular' => t('1 month'),
+      'plural' => t('@count months'),
+    ),
+    'years' => array(
+      'singular' => t('1 year'),
+      'plural' => t('@count years'),
+    ),
+  );
+  return format_plural($value, $metrics[$metric]['singular'], $metrics[$metric]['plural']);
+}
+
+/**
+ * Suffix the given value with a short (untranslated) metrics identifier, e.g.
+ * the arguments 'seconds' and 1 make '1s', or 'years' and 2008 make '2008y'.
+ */
+function duration_metric_hms($metric, $value) {
+  static $metrics; // cache that stuff
+
+  if (!isset($metrics)) {
+    $metrics = array(
+      'seconds' => 's',
+      'minutes' => 'm',
+      'hours' => 'h',
+      'days' => 'd',
+      'weeks' => 'w',
+      'months' => 'mon',
+      'years' => 'y',
+    );
+  }
+  return $value . $metrics[$metric];
+}
+
+
+/**
+ * Format the values of a duration object in a user specified format.
+ *
+ * @param $duration
+ *   The duration object to be formatted.
+ * @param $format
+ *   The format that will be used. You can use the following placeholders:
+ *   - %y - number of years (e.g. '1', '10000').
+ *   - %m - number of months, without padding (e.g. '1', '12').
+ *   - %o - number of months, padded to two digits (e.g. '01', '12').
+ *   - %v - number of weeks, without padding (e.g. '1', '52').
+ *   - %V - number of weeks, padded to two digits (e.g. '01', '52').
+ *   - %e - number of days, without padding (e.g. '1', '31').
+ *   - %d - number of days, padded to two digits (e.g. '01', '31').
+ *   - %h - number of hours, without padding (e.g. '1', '24').
+ *   - %H - number of hours, padded to two digits (e.g. '01', '24').
+ *   - %O - number of minutes, without padding (e.g. '1', '60').
+ *   - %M - number of minutes, padded to two digits (e.g. '01', '60').
+ *   - %s - number of seconds, without padding (e.g. '1', '60').
+ *   - %S - number of seconds, padded to two digits (e.g. '01', '60').
+ *   - %n - newline character.
+ *   - %% - a literal '%' character.
+ */
+function duration_format_custom($duration, $format = '%h:%M:%S') {
+  if (!is_object($duration) || !$duration->is_valid()) {
+    return '';
+  }
+  $replacements = array(
+    '%y' => strval($duration->get_years()),
+    '%m' => strval($duration->get_months()),
+    '%o' => _duration_pad($duration->get_months()),
+    '%v' => strval($duration->get_weeks()),
+    '%V' => _duration_pad($duration->get_weeks()),
+    '%e' => strval($duration->get_days()),
+    '%d' => _duration_pad($duration->get_days()),
+    '%h' => strval($duration->get_hours()),
+    '%H' => _duration_pad($duration->get_hours()),
+    '%O' => strval($duration->get_minutes()),
+    '%M' => _duration_pad($duration->get_minutes()),
+    '%s' => strval($duration->get_seconds()),
+    '%S' => _duration_pad($duration->get_seconds()),
+    '%n' => "\n",
+    '%%' => '%',
+  );
+  return strtr($format, $replacements);
+}
+
+/**
+ * Specialized padding function, using '0' as (left) pad and taking
+ * potential decimal points into account for the calculation of the actual
+ * pad length.
+ */
+function _duration_pad($number, $pad_length = 2) {
+  $number_string = strval($number);
+  $found = strpos($number_string, '.');
+  if ($found !== FALSE) {
+    $pad_length = strlen($number_string) - $found + $pad_length;
+  }
+  return str_pad($number_string, $pad_length, '0', STR_PAD_LEFT);
+}

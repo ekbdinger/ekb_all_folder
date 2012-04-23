@@ -1,0 +1,12 @@
+; $Id: duration_api.info,v 1.1 2008/04/26 23:16:47 jpetso Exp $
+name = Duration API
+description = An API to transform and perform evaluations on duration objects.
+package = Date/Time
+core = 6.x
+
+; Information added by drupal.org packaging script on 2008-10-26
+version = "6.x-1.0"
+core = "6.x"
+project = "duration"
+datestamp = "1225034707"
+
